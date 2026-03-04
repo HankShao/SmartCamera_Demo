@@ -141,14 +141,6 @@ int DoFaceDetect(cv::Mat &bgr_mat, cv::CascadeClassifier &cascade,
 			break;
 	}
 
-	if (valid_face_count > 0)
-	{
-		// 保存灰度图
-		static int cnt;
-		std::string path = "./face_gray_" + std::to_string(cnt++) + ".jpg";
-		cv::imwrite(path, gray_mat);
-	}
-
 	return valid_face_count;
 
 }
@@ -178,6 +170,14 @@ static cv::CascadeClassifier face_cascade;
 void OmniAlgoWork_start()
 {
 	std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+
+	OSALOG_INFO("Face Detect mpp init....\n");
+	if (0 != mpp_algo_init(ALG_PIC_WIDTH, ALG_PIC_HEIGHT))
+	{
+		OSALOG_ERROR("Face Detect mpp failed!\n");
+		return;
+	}		
+	
 	OSALOG_INFO("Face Detect load model....\n");
 	FaceDetectInit(face_cascade, "./haarcascade_frontalface_alt2.xml");
 
@@ -209,7 +209,7 @@ void OmniAlgoWork_start()
 					}
 					
 					// 2. 执行人脸检测
-					FACE_DETECT_RESULT_S face_result[2];  // 最多存储10个人脸
+					FACE_DETECT_RESULT_S face_result[2];  // 最多存储2个人脸
 					int face_num = DoFaceDetect(bgr_mat, face_cascade, face_result, 2);
 					if (face_num < 0) {
 						break;
@@ -229,10 +229,16 @@ void OmniAlgoWork_start()
 							   face_result[i].height,
 							   face_result[i].confidence);
 					}
-					
+
+
+					{
+						// 保存大图
+						static int cnt;
+						std::string path = "./face_bigpic_" + std::to_string(cnt++) + ".jpg";
+						cv::imwrite(path, bgr_mat);
+					}
 				}while(0);
 
-				free(stVppFrameInfo.frame.data[0]);
 				stVppFrameInfo.free(stVppFrameInfo.priv);
 				
 				now = std::chrono::system_clock::now();

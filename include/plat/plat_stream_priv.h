@@ -17,7 +17,7 @@ extern "C" {
 #endif
 #endif /* End of #ifdef __cplusplus */
 
-#define DEFAULT_COMM_VB_NUM 10
+#define DEFAULT_COMM_VB_NUM 7
 #define WDR_MAX_PIPE_NUM    4
 #define FILE_NAME_LEN       128
 #define PATH_MAX            256

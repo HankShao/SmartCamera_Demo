@@ -34,6 +34,8 @@ typedef struct {
 	FRAME_RELEASE_CB free;  //free(priv)
 }vpp_frame_info_t;
 
+int32_t mpp_algo_init(int32_t algow, int32_t algoh);
+
 int32_t mpp_encode_jpg(void *frame, jpgenc_info_t *out);
 
 int32_t mpp_vpp_getframe(int32_t chn, vpp_frame_info_t *frame);

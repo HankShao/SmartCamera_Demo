@@ -19,8 +19,11 @@
 #include "mpi_sys.h"
 #include "mpi_venc.h"
 #include "mpi_vpss.h"
+#include "mpi_vgs.h"
 #include "hi_buffer.h"
 
+#include "hi_common.h"
+#include "hi_tde_api.h"
 #include "plat_mpp.h"
 
 
@@ -33,136 +36,20 @@ extern "c"{
 #define VPSS_GROUP_ID 0
 
 
-static void SAMPLE_COMM_VDEC_SaveYUVFile_Linear8Bit(FILE* pfd, VIDEO_FRAME_S* pVBuf)
-{
-    HI_U8* pY_map = HI_NULL;
-    HI_U8* pC_map = HI_NULL;
-    unsigned int w, h;
-    HI_U8* pMemContent = HI_NULL;
-    HI_U8 *pTmpBuff = HI_NULL;
-    HI_U64 phy_addr;
-    HI_U32 s32Csize = 0;
-    HI_U32 s32Ysize = 0;
-    PIXEL_FORMAT_E  enPixelFormat = pVBuf->enPixelFormat;
-    HI_U32 u32UvHeight;
+static VB_POOL g_AlgoBlkPool = VB_INVALID_HANDLE;
+static uint32_t g_algoWidth, g_algoHeight;
+static HI_BOOL gbUsedTDE = HI_FALSE;
+static HI_BOOL gbUsedVGS = HI_TRUE;
 
-    if (PIXEL_FORMAT_YVU_SEMIPLANAR_420 == enPixelFormat)
-    {
-        s32Ysize = pVBuf->u32Stride[0] * pVBuf->u32Height;
-        u32UvHeight = pVBuf->u32Height / 2;
-    }
-    else if(PIXEL_FORMAT_YVU_SEMIPLANAR_422 == enPixelFormat)
-    {
-        s32Ysize = pVBuf->u32Stride[0] * pVBuf->u32Height;
-        u32UvHeight = pVBuf->u32Height;
-    }
-    else if(PIXEL_FORMAT_YUV_400 == enPixelFormat)
-    {
-        s32Ysize = pVBuf->u32Stride[0] * pVBuf->u32Height;
-        u32UvHeight = 0;
-    }
-    else
-    {
-        OSALOG_INFO("%s %d: This YUV format is not support!\n",__func__, __LINE__);
-        return;
-    }
-
-    pTmpBuff = (HI_U8 *)malloc(pVBuf->u32Width / 2);
-    if(HI_NULL == pTmpBuff)
-    {
-        OSALOG_ERROR("malloc pTmpBuff (size=%d) fail!!!\n",pVBuf->u32Stride[0]);
-        return;
-    }
-
-    phy_addr = pVBuf->u64PhyAddr[0];
-
-    pY_map = (HI_U8*) HI_MPI_SYS_Mmap(phy_addr, s32Ysize);
-    if (HI_NULL == pY_map)
-    {
-        OSALOG_ERROR("HI_MPI_SYS_Mmap for pY_map fail!!\n");
-        free(pTmpBuff);
-        pTmpBuff = HI_NULL;
-        return;
-    }
-    if (PIXEL_FORMAT_YUV_400 != enPixelFormat) {
-        s32Csize = u32UvHeight * pVBuf->u32Stride[1];
-        pC_map = (HI_U8*)HI_MPI_SYS_Mmap(pVBuf->u64PhyAddr[1], s32Csize);
-        if (HI_NULL == pC_map)
-        {
-            OSALOG_ERROR("HI_MPI_SYS_Mmap for pC_map fail!!\n");
-            free(pTmpBuff);
-            pTmpBuff = HI_NULL;
-            HI_MPI_SYS_Munmap(pY_map, s32Ysize);
-            pY_map = HI_NULL;
-            return;
-        }
-    }
-
-    fprintf(stderr, "saving......Y......");
-    fflush(stderr);
-    for (h = 0; h < pVBuf->u32Height; h++)
-    {
-        pMemContent = pY_map + h * pVBuf->u32Stride[0];
-        fwrite(pMemContent, pVBuf->u32Width, 1, pfd);
-    }
-
-    if(PIXEL_FORMAT_YUV_400 != enPixelFormat)
-    {
-        fflush(pfd);
-        fprintf(stderr, "U......");
-        fflush(stderr);
-
-        for (h = 0; h < u32UvHeight; h++)
-        {
-            pMemContent = pC_map + h * pVBuf->u32Stride[1];
-
-            pMemContent += 1;
-
-            for (w = 0; w < pVBuf->u32Width / 2; w++)
-            {
-                pTmpBuff[w] = *pMemContent;
-                pMemContent += 2;
-            }
-            fwrite(pTmpBuff, pVBuf->u32Width / 2, 1, pfd);
-        }
-        fflush(pfd);
-
-        fprintf(stderr, "V......");
-        fflush(stderr);
-        for (h = 0; h < u32UvHeight; h++)
-        {
-            pMemContent = pC_map + h * pVBuf->u32Stride[1];
-
-            for (w = 0; w < pVBuf->u32Width / 2; w++)
-            {
-                pTmpBuff[w] = *pMemContent;
-                pMemContent += 2;
-            }
-            fwrite(pTmpBuff, pVBuf->u32Width / 2, 1, pfd);
-        }
-    }
-    fflush(pfd);
-
-    fprintf(stderr, "done!\n");
-    fflush(stderr);
-    free(pTmpBuff);
-    pTmpBuff = HI_NULL;
-
-    if (pC_map != HI_NULL) {
-        HI_MPI_SYS_Munmap(pC_map, s32Csize);
-        pC_map = HI_NULL;
-    }
-
-    HI_MPI_SYS_Munmap(pY_map, s32Ysize);
-    pY_map = HI_NULL;
-
-    return;
-}
-
+int32_t mpp_tde_scale(VIDEO_FRAME_S* input, VIDEO_FRAME_S* output);
+int mpp_vgs_scale(VIDEO_FRAME_INFO_S* input, VIDEO_FRAME_INFO_S* output);
 
 struct vpp_frame_priv{
 	VPSS_CHN chn;
+	HI_BOOL bUsedTDE;
+	HI_BOOL bUsedVGS;
 	HI_BOOL bMmap;
+	VB_BLK hBlk;
 	uint8_t* virAddr[3];
 	uint32_t planesize[3];
 	VIDEO_FRAME_INFO_S stVideoFrame;
@@ -173,22 +60,41 @@ void vpp_release_frame(void *p)
 	HI_S32 ret;
 	struct vpp_frame_priv *priv = (struct vpp_frame_priv *)p;
 
-	if (priv->bMmap == HI_TRUE)
+	//OSALOG_INFO("bVGS:%d hBlk:%#x\n", priv->bUsedVGS, priv->hBlk);
+	if (priv->bUsedTDE == HI_TRUE || priv->bUsedVGS == HI_TRUE)
 	{
-		HI_MPI_SYS_Munmap(priv->virAddr[0], priv->planesize[0]);
-		HI_MPI_SYS_Munmap(priv->virAddr[1], priv->planesize[1]);
-	}
-	
-	ret = HI_MPI_VPSS_ReleaseChnFrame(VPSS_GROUP_ID, priv->chn, &priv->stVideoFrame);
-	if (ret != HI_SUCCESS)
-	{
-		OSALOG_ERROR("HI_MPI_VPSS_ReleaseChnFrame failed! ret = %d\n", ret);
+		uint32_t blksize = COMMON_GetPicBufferSize(g_algoWidth, g_algoHeight, PIXEL_FORMAT_YVU_SEMIPLANAR_420,
+			DATA_BITWIDTH_8, COMPRESS_MODE_NONE, DEFAULT_ALIGN);
+		ret = HI_MPI_SYS_Munmap(priv->virAddr[0], blksize);
+		if (ret != HI_SUCCESS)
+		{
+			OSALOG_ERROR("HI_MPI_SYS_Munmap failed! ret = %d\n", ret);
+		}
+
+		ret = HI_MPI_VB_ReleaseBlock(priv->hBlk);
+		if (ret != HI_SUCCESS)
+		{
+			OSALOG_ERROR("HI_MPI_VB_ReleaseBlock failed! ret = %d\n", ret);
+		}
+		
+	}else{
+		if (priv->bMmap == HI_TRUE)
+		{
+			HI_MPI_SYS_Munmap(priv->virAddr[0], priv->planesize[0]);
+			HI_MPI_SYS_Munmap(priv->virAddr[1], priv->planesize[1]);
+		}
+		
+		ret = HI_MPI_VPSS_ReleaseChnFrame(VPSS_GROUP_ID, priv->chn, &priv->stVideoFrame);
+		if (ret != HI_SUCCESS)
+		{
+			OSALOG_ERROR("HI_MPI_VPSS_ReleaseChnFrame failed! ret = %d\n", ret);
+		}
 	}
 
 	return;
 }
 
-int32_t mpp_vpp_getframe(int32_t chn, vpp_frame_info_t *frame)
+int32_t mpp_vpp_getframe(int32_t chn, vpp_frame_info_t *algonode)
 {
 	HI_S32 s32Ret;
 	HI_S32 s32MilliSec = 100;
@@ -200,19 +106,91 @@ int32_t mpp_vpp_getframe(int32_t chn, vpp_frame_info_t *frame)
 	uint8_t* pVirAddrUC = NULL;
 	uint32_t u32Ysize;
 	uint32_t u32UvHeight;
-	
-	priv->chn = chn;	
+	VIDEO_FRAME_S output;
+	VB_BLK blkInput;
 	if ((s32Ret = HI_MPI_VPSS_GetChnFrame(VPSS_GROUP_ID, chn, &priv->stVideoFrame, s32MilliSec)) != HI_SUCCESS)
 	{
 		OSALOG_ERROR("Get frame from VPSS fail(0x%x)!\n", s32Ret);
 		return AV_R_EFAIL;
 	}
+	u32Ysize = pVframe->u32Stride[0] * pVframe->u32Height;
+	u32UvHeight = pVframe->u32Height / 2;
 
-    if (PIXEL_FORMAT_YVU_SEMIPLANAR_420 == pVframe->enPixelFormat)
+	if (gbUsedVGS)
+	{
+		uint32_t blksize = COMMON_GetPicBufferSize(g_algoWidth, g_algoHeight, PIXEL_FORMAT_YVU_SEMIPLANAR_420,
+			DATA_BITWIDTH_8, COMPRESS_MODE_NONE, DEFAULT_ALIGN);
+		blkInput = HI_MPI_VB_GetBlock(g_AlgoBlkPool, blksize, NULL);
+		if (blkInput == VB_INVALID_HANDLE)
+		{
+			OSALOG_ERROR("Get Input VB Block failed!\n");
+			s32Ret = -1;
+			goto out;
+		}
+		HI_U64 physAddrInput = HI_MPI_VB_Handle2PhysAddr(blkInput);
+		uint8_t *virtAddr = HI_MPI_SYS_Mmap(physAddrInput, blksize);
+		if (!virtAddr)
+		{
+			OSALOG_ERROR("Mmap Input failed!\n");
+			HI_MPI_VB_ReleaseBlock(blkInput);
+			goto out;
+		}
+
+		VIDEO_FRAME_INFO_S algoFrame;
+		memset(&algoFrame, 0, sizeof(VIDEO_FRAME_INFO_S));
+		algoFrame.stVFrame.enPixelFormat = PIXEL_FORMAT_YUV_SEMIPLANAR_420;  // NV12
+		algoFrame.stVFrame.u32Width = g_algoWidth;
+		algoFrame.stVFrame.u32Height = g_algoHeight;
+		algoFrame.stVFrame.u32Stride[0] = g_algoWidth;	 // Y 分量 stride
+		algoFrame.stVFrame.u32Stride[1] = g_algoWidth;	 // UV 分量 stride
+		algoFrame.stVFrame.u64PhyAddr[0] = physAddrInput;  // Y 平面地址
+		algoFrame.stVFrame.u64PhyAddr[1] = physAddrInput + g_algoWidth * g_algoHeight;  // UV 平面地址
+		algoFrame.stVFrame.u64PhyAddr[2] = algoFrame.stVFrame.u64PhyAddr[1];  // UV 平面地址
+		algoFrame.stVFrame.u64VirAddr[0] = (HI_U64)(unsigned long)virtAddr;
+		algoFrame.stVFrame.u64VirAddr[1] = 0;
+		algoFrame.u32PoolId = g_AlgoBlkPool;
+		algoFrame.enModId = HI_ID_VB;
+
+		if ((s32Ret = mpp_vgs_scale(&priv->stVideoFrame, &algoFrame)) != HI_SUCCESS)
+		{
+			HI_MPI_VB_ReleaseBlock(blkInput);
+			goto out;
+		}
+		output = algoFrame.stVFrame;
+	}
+	else if (gbUsedTDE)
+	{// Hi3516CV500 TDE缩放不支持YUV格式
+		uint32_t blksize = COMMON_GetPicBufferSize(g_algoWidth, g_algoHeight, PIXEL_FORMAT_YVU_SEMIPLANAR_420,
+			DATA_BITWIDTH_8, COMPRESS_MODE_NONE, DEFAULT_ALIGN);
+		VB_BLK blkInput = HI_MPI_VB_GetBlock(g_AlgoBlkPool, blksize, NULL);
+		if (blkInput == VB_INVALID_HANDLE)
+		{
+			OSALOG_ERROR("Get Input VB Block failed!Ret=0x%x\n", s32Ret);
+			goto out;
+		}
+		HI_U64 physAddrInput = HI_MPI_VB_Handle2PhysAddr(blkInput);
+		uint8_t *virtAddr = HI_MPI_SYS_Mmap(physAddrInput, blksize);
+		if (!virtAddr)
+		{
+			OSALOG_ERROR("Mmap Input failed!\n");
+			HI_MPI_VB_ReleaseBlock(blkInput);
+			goto out;
+		}	
+		
+		output.u32Width = g_algoWidth;
+		output.u32Height = g_algoHeight;
+		output.u64PhyAddr[0] = physAddrInput;
+		output.u64VirAddr[0] = (HI_U64)(unsigned long)virtAddr;
+		output.u32Stride[0] = g_algoWidth;
+
+		if (!mpp_tde_scale(&priv->stVideoFrame.stVFrame, &output))
+		{
+			HI_MPI_VB_ReleaseBlock(blkInput);
+			goto out;
+		}
+	}
+	else if (PIXEL_FORMAT_YVU_SEMIPLANAR_420 == pVframe->enPixelFormat)
     {
-        u32Ysize = pVframe->u32Stride[0] * pVframe->u32Height;
-        u32UvHeight = pVframe->u32Height / 2;
-
 		if (pVframe->u64VirAddr[0] == HI_NULL)
 		{
 			pVirAddrY = HI_MPI_SYS_Mmap(pVframe->u64PhyAddr[0], u32Ysize);
@@ -228,11 +206,15 @@ int32_t mpp_vpp_getframe(int32_t chn, vpp_frame_info_t *frame)
 				return AV_R_EFAIL;
 			}
 
-			priv->virAddr[0] = pVirAddrY;
-			priv->planesize[0] = u32Ysize;
-			priv->virAddr[1] = pVirAddrUC;
-			priv->planesize[1] = u32UvHeight * pVframe->u32Stride[1];
-			priv->bMmap = HI_TRUE;
+
+			output.u32Width = pVframe->u32Width;
+			output.u32Height = pVframe->u32Height;
+			output.u64PhyAddr[0] = pVframe->u64PhyAddr[0];
+			output.u64PhyAddr[1] = pVframe->u64PhyAddr[1];
+			output.u64VirAddr[0] = (HI_U64)(unsigned long)pVirAddrY;
+			output.u64VirAddr[1] = (HI_U64)(unsigned long)pVirAddrUC;
+			output.u32Stride[0] = g_algoWidth;
+			output.u32Stride[1] = g_algoWidth;
 		}
 
     }
@@ -248,29 +230,219 @@ int32_t mpp_vpp_getframe(int32_t chn, vpp_frame_info_t *frame)
 	}
 #endif
 
-	frame->frame.width = priv->stVideoFrame.stVFrame.u32Width;
-	frame->frame.height = priv->stVideoFrame.stVFrame.u32Height;
-	memcpy(frame->frame.data, priv->virAddr, sizeof(priv->virAddr));
-	memcpy(frame->frame.stride, pVframe->u32Stride, sizeof(pVframe->u32Stride));
-	frame->frame.size[0] = u32Ysize;
-	frame->frame.size[1] = u32UvHeight * pVframe->u32Stride[1];
-	frame->priv = priv;
-	frame->free = (void *)vpp_release_frame;
+	algonode->frame.width = output.u32Width;
+	algonode->frame.height = output.u32Height;
+	memcpy(algonode->frame.data, output.u64VirAddr, sizeof(output.u64VirAddr));
+	memcpy(algonode->frame.stride, output.u32Stride, sizeof(output.u32Stride));
+	algonode->frame.size[0] = u32Ysize;
+	algonode->frame.size[1] = u32UvHeight * pVframe->u32Stride[1];
 
-	frame->frame.data[0] = malloc(u32UvHeight * pVframe->u32Stride[1] + u32Ysize); 
-	frame->frame.data[1] = frame->frame.data[0] + u32Ysize;
-	memcpy(frame->frame.data[0], priv->virAddr[0], u32Ysize);
-	memcpy(frame->frame.data[1], priv->virAddr[1], u32Ysize/2);
-
+	priv->chn = chn;
+	memcpy(priv->virAddr, output.u64VirAddr, sizeof(output.u64VirAddr));
+	priv->planesize[0] = u32Ysize;
+	priv->planesize[1] = u32UvHeight * pVframe->u32Stride[1];
+	priv->hBlk = blkInput;
+	priv->bUsedTDE = gbUsedTDE;
+	priv->bUsedVGS = gbUsedVGS;
+	priv->bMmap = HI_TRUE;
+	algonode->priv = priv;
+	algonode->free = (void *)vpp_release_frame;
 	
 out:
+	if (gbUsedVGS || gbUsedTDE){
+		s32Ret = HI_MPI_VPSS_ReleaseChnFrame(VPSS_GROUP_ID, chn, &priv->stVideoFrame);
+		if (s32Ret != HI_SUCCESS)
+		{
+			OSALOG_ERROR("HI_MPI_VPSS_ReleaseChnFrame failed! ret = %d\n", s32Ret);
+		}
+	}
 	return s32Ret;
 }
 
+int32_t mpp_tde_init()
+{
+    // 打开 TDE 设备
+    int ret = HI_TDE2_Open();
+    if (ret < 0)
+    {
+        OSALOG_ERROR("HI_TDE2_Open failed! Ret=0x%x\n", ret);
+        return -1;
+    }
+    
+    OSALOG_INFO("TDE device opened successfully!\n");
+    return 0;
 
+}
 
+int32_t mpp_algo_vb_init(int32_t algow, int32_t algoh)
+{
+    // 创建输出 VB 池 (640x360 NV12)
+    VB_POOL_CONFIG_S stVbPoolCfg;
+    memset(&stVbPoolCfg, 0, sizeof(VB_POOL_CONFIG_S));
+	stVbPoolCfg.u64BlkSize = COMMON_GetPicBufferSize(algow, algoh, PIXEL_FORMAT_YVU_SEMIPLANAR_420,
+        DATA_BITWIDTH_8, COMPRESS_MODE_NONE, DEFAULT_ALIGN);
+    stVbPoolCfg.u32BlkCnt = 2;
+    stVbPoolCfg.enRemapMode = VB_REMAP_MODE_NONE;
+    g_AlgoBlkPool = HI_MPI_VB_CreatePool(&stVbPoolCfg);
+    if (g_AlgoBlkPool < 0)
+    {
+        OSALOG_ERROR("Create Output VB Pool failed!\n");
+        return -1;
+    }
 
+	g_algoWidth = algow;
+	g_algoHeight = algoh;
+	
+	return 0;
+}
 
+int32_t mpp_algo_init(int32_t algow, int32_t algoh)
+{
+	int ret = mpp_algo_vb_init(algow, algoh);
+
+	//mpp_tde_init();
+
+	return ret;
+}
+
+int32_t mpp_tde_scale(VIDEO_FRAME_S* input, VIDEO_FRAME_S* output)
+{
+    TDE2_SURFACE_S stSrc;
+    TDE2_SURFACE_S stDst;
+    TDE2_OPT_S stOpt;
+    TDE2_RECT_S stSrcRect;
+    TDE2_RECT_S stDstRect;
+    HI_S32 s32Handle;
+
+    // 1. 配置源图像属性 (NV12)
+    memset(&stSrc, 0, sizeof(TDE2_SURFACE_S));
+    stSrc.enColorFmt = TDE2_COLOR_FMT_MP1_YCbCr420MBP;  // NV12 格式
+    stSrc.PhyAddr = input->u64PhyAddr[0];                 // Y 平面物理地址
+    stSrc.u32Stride = input->u32Stride[0];               // 行 stride
+    stSrc.u32Width = input->u32Width;
+    stSrc.u32Height = input->u32Height;
+    stSrc.bAlphaMax255 = HI_TRUE;
+
+    // 2. 配置目标图像属性 (NV12)
+    memset(&stDst, 0, sizeof(TDE2_SURFACE_S));
+    stDst.enColorFmt = TDE2_COLOR_FMT_MP1_YCbCr420MBP;
+    stDst.PhyAddr = output->u64PhyAddr[0];
+    stDst.u32Stride = output->u32Stride[0];               // 行 stride
+    stDst.u32Width = output->u32Width;
+    stDst.u32Height = output->u32Height;
+    stDst.bAlphaMax255 = HI_TRUE;
+
+    // 3. 配置源图像区域 (整个图像)
+    stSrcRect.s32Xpos = 0;
+    stSrcRect.s32Ypos = 0;
+    stSrcRect.u32Width = stSrc.u32Width;
+    stSrcRect.u32Height = stSrc.u32Height;
+
+    // 4. 配置目标图像区域 (整个图像)
+    stDstRect.s32Xpos = 0;
+    stDstRect.s32Ypos = 0;
+    stDstRect.u32Width = stDst.u32Width;
+    stDstRect.u32Height = stDst.u32Height;
+
+    // 5. 开始 TDE 任务
+    s32Handle = HI_TDE2_BeginJob();
+    if (s32Handle < 0)
+    {
+        OSALOG_ERROR("HI_TDE2_BeginJob failed! Handle=0x%x\n", s32Handle);
+        return -1;
+    }
+	
+    // 6. 执行快速缩放
+	HI_S32 s32Ret = HI_TDE2_QuickResize(s32Handle, &stSrc, &stSrcRect, &stDst, &stDstRect);
+    if (s32Ret < 0)
+    {
+        OSALOG_ERROR("HI_TDE2_QuickResize failed! Ret=0x%x\n", s32Ret);
+        HI_TDE2_CancelJob(s32Handle);
+        return -1;
+    }	
+
+    // 7. 提交任务
+    s32Ret = HI_TDE2_EndJob(s32Handle, HI_FALSE, HI_FALSE, 1000);
+    if (s32Ret < 0)
+    {
+        OSALOG_ERROR("HI_TDE2_EndJob failed! Ret=0x%x\n", s32Ret);
+        HI_TDE2_CancelJob(s32Handle);
+        return -1;
+    }
+
+    return 0;
+
+}
+
+int32_t mpp_vgs_init()
+{
+    OSALOG_INFO("VGS initialized successfully!\n");
+    return 0;
+}
+
+/**
+ * 执行 VGS 缩放操作
+ * @param srcPhysAddr  源图像物理地址
+ * @param dstPhysAddr  目标图像物理地址
+ */
+int mpp_vgs_scale(VIDEO_FRAME_INFO_S* input, VIDEO_FRAME_INFO_S* output)
+{
+    HI_S32 s32Ret;
+    VGS_HANDLE vgsHandle;
+    
+    // 输出图像属性
+    VIDEO_FRAME_INFO_S stDstImage;
+    memset(&stDstImage, 0, sizeof(VIDEO_FRAME_INFO_S));
+    stDstImage.stVFrame.enPixelFormat = PIXEL_FORMAT_YUV_SEMIPLANAR_420;  // NV12
+    stDstImage.stVFrame.u32Width = output->stVFrame.u32Width;
+    stDstImage.stVFrame.u32Height = output->stVFrame.u32Height;
+    stDstImage.stVFrame.u32Stride[0] = output->stVFrame.u32Stride[0];
+    stDstImage.stVFrame.u32Stride[1] = output->stVFrame.u32Stride[1];
+    stDstImage.stVFrame.u64PhyAddr[0] = output->stVFrame.u64PhyAddr[0];
+    stDstImage.stVFrame.u64PhyAddr[1] = output->stVFrame.u64PhyAddr[0] + output->stVFrame.u32Stride[0] * output->stVFrame.u32Height;
+    stDstImage.stVFrame.u64VirAddr[0] = 0;
+    stDstImage.stVFrame.u64VirAddr[1] = 0;
+    stDstImage.u32PoolId =  output->u32PoolId;
+
+    // 缩放任务参数
+    VGS_TASK_ATTR_S stTask;
+    memset(&stTask, 0, sizeof(VGS_TASK_ATTR_S));
+    
+    // 设置输入输出图像
+    memcpy(&stTask.stImgIn, input, sizeof(VIDEO_FRAME_INFO_S));
+    memcpy(&stTask.stImgOut, &stDstImage, sizeof(VIDEO_FRAME_INFO_S));
+    
+    // 缩放选项
+	VGS_SCLCOEF_MODE_E enScaleCoefMode = VGS_SCLCOEF_NORMAL;
+
+    // 开始 VGS 任务
+    s32Ret = HI_MPI_VGS_BeginJob(&vgsHandle);
+    if (s32Ret < 0)
+    {
+        OSALOG_ERROR("HI_MPI_VGS_BeginJob failed! Ret=0x%x\n", s32Ret);
+        return -1;
+    }
+
+    // 添加缩放任务
+    s32Ret = HI_MPI_VGS_AddScaleTask(vgsHandle, &stTask, enScaleCoefMode);
+    if (s32Ret < 0)
+    {
+        OSALOG_ERROR("HI_MPI_VGS_AddScaleTask failed! Ret=0x%x\n", s32Ret);
+        HI_MPI_VGS_CancelJob(vgsHandle);
+        return -1;
+    }
+
+    // 提交任务并等待完成
+    s32Ret = HI_MPI_VGS_EndJob(vgsHandle);
+    if (s32Ret < 0)
+    {
+        OSALOG_ERROR("HI_MPI_VGS_EndJob failed! Ret=0x%x\n", s32Ret);
+        HI_MPI_VGS_CancelJob(vgsHandle);
+        return -1;
+    }
+
+    return 0;
+}
 
 
 #ifdef __cplusplus
