@@ -165,6 +165,29 @@ int FaceDetectInit(cv::CascadeClassifier &cascade, const char *cascade_path)
     return 0;
 }
 
+/**
+ * @brief 将数据写入文件
+ * @param[in] path 文件路径
+ * @param[in] data 数据指针
+ * @param[in] len  数据长度
+ * @return 0成功, -1失败
+ */
+static inline int save_file(const char* path, const void* data, size_t len)
+{
+    if (!path || !data || len == 0) {
+        return -1;
+    }
+
+    FILE* fp = fopen(path, "wb");
+    if (!fp) {
+        return -1;
+    }
+
+    size_t ret = fwrite(data, 1, len, fp);
+    fclose(fp);
+
+    return (ret == len) ? 0 : -1;
+}
 
 static cv::CascadeClassifier face_cascade;
 void OmniAlgoWork_start()
@@ -230,13 +253,21 @@ void OmniAlgoWork_start()
 							   face_result[i].confidence);
 					}
 
-
+					jpgenc_info_t out;
+					if (0 == mpp_encode_jpg(stVppFrameInfo.priv, &out))
+					{
+						static int cnt;
+						std::string path = "./face_bigpic_" + std::to_string(cnt++) + ".jpg";					
+						save_file(path.c_str(), out.data, out.size);
+					}
+#if 0
 					{
 						// 保存大图
 						static int cnt;
 						std::string path = "./face_bigpic_" + std::to_string(cnt++) + ".jpg";
 						cv::imwrite(path, bgr_mat);
 					}
+#endif
 				}while(0);
 
 				stVppFrameInfo.free(stVppFrameInfo.priv);

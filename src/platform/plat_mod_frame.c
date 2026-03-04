@@ -25,6 +25,7 @@
 #include "hi_common.h"
 #include "hi_tde_api.h"
 #include "plat_mpp.h"
+#include "plat_mpp_priv.h"
 
 
 #ifdef __cplusplus
@@ -32,8 +33,6 @@
 extern "c"{
 #endif
 #endif
-
-#define VPSS_GROUP_ID 0
 
 
 static VB_POOL g_AlgoBlkPool = VB_INVALID_HANDLE;
@@ -43,17 +42,6 @@ static HI_BOOL gbUsedVGS = HI_TRUE;
 
 int32_t mpp_tde_scale(VIDEO_FRAME_S* input, VIDEO_FRAME_S* output);
 int mpp_vgs_scale(VIDEO_FRAME_INFO_S* input, VIDEO_FRAME_INFO_S* output);
-
-struct vpp_frame_priv{
-	VPSS_CHN chn;
-	HI_BOOL bUsedTDE;
-	HI_BOOL bUsedVGS;
-	HI_BOOL bMmap;
-	VB_BLK hBlk;
-	uint8_t* virAddr[3];
-	uint32_t planesize[3];
-	VIDEO_FRAME_INFO_S stVideoFrame;
-};
 
 void vpp_release_frame(void *p)
 {
@@ -102,13 +90,14 @@ int32_t mpp_vpp_getframe(int32_t chn, vpp_frame_info_t *algonode)
 	memset(priv, 0, sizeof(struct vpp_frame_priv));
 	
 	VIDEO_FRAME_S* pVframe = &priv->stVideoFrame.stVFrame;
+	VIDEO_FRAME_INFO_S stVppFrame;
 	uint8_t* pVirAddrY = NULL;
 	uint8_t* pVirAddrUC = NULL;
 	uint32_t u32Ysize;
 	uint32_t u32UvHeight;
 	VIDEO_FRAME_S output;
 	VB_BLK blkInput;
-	if ((s32Ret = HI_MPI_VPSS_GetChnFrame(VPSS_GROUP_ID, chn, &priv->stVideoFrame, s32MilliSec)) != HI_SUCCESS)
+	if ((s32Ret = HI_MPI_VPSS_GetChnFrame(VPSS_GROUP_ID, chn, &stVppFrame, s32MilliSec)) != HI_SUCCESS)
 	{
 		OSALOG_ERROR("Get frame from VPSS fail(0x%x)!\n", s32Ret);
 		return AV_R_EFAIL;
@@ -151,12 +140,14 @@ int32_t mpp_vpp_getframe(int32_t chn, vpp_frame_info_t *algonode)
 		algoFrame.u32PoolId = g_AlgoBlkPool;
 		algoFrame.enModId = HI_ID_VB;
 
-		if ((s32Ret = mpp_vgs_scale(&priv->stVideoFrame, &algoFrame)) != HI_SUCCESS)
+		if ((s32Ret = mpp_vgs_scale(&stVppFrame, &algoFrame)) != HI_SUCCESS)
 		{
 			HI_MPI_VB_ReleaseBlock(blkInput);
 			goto out;
 		}
 		output = algoFrame.stVFrame;
+
+		priv->stVideoFrame = algoFrame;
 	}
 	else if (gbUsedTDE)
 	{// Hi3516CV500 TDE缩放不支持YUV格式
@@ -183,7 +174,7 @@ int32_t mpp_vpp_getframe(int32_t chn, vpp_frame_info_t *algonode)
 		output.u64VirAddr[0] = (HI_U64)(unsigned long)virtAddr;
 		output.u32Stride[0] = g_algoWidth;
 
-		if (!mpp_tde_scale(&priv->stVideoFrame.stVFrame, &output))
+		if (!mpp_tde_scale(&stVppFrame.stVFrame, &output))
 		{
 			HI_MPI_VB_ReleaseBlock(blkInput);
 			goto out;
@@ -215,6 +206,7 @@ int32_t mpp_vpp_getframe(int32_t chn, vpp_frame_info_t *algonode)
 			output.u64VirAddr[1] = (HI_U64)(unsigned long)pVirAddrUC;
 			output.u32Stride[0] = g_algoWidth;
 			output.u32Stride[1] = g_algoWidth;
+			priv->stVideoFrame = stVppFrame;
 		}
 
     }
@@ -245,17 +237,22 @@ int32_t mpp_vpp_getframe(int32_t chn, vpp_frame_info_t *algonode)
 	priv->bUsedTDE = gbUsedTDE;
 	priv->bUsedVGS = gbUsedVGS;
 	priv->bMmap = HI_TRUE;
+	
 	algonode->priv = priv;
 	algonode->free = (void *)vpp_release_frame;
 	
 out:
 	if (gbUsedVGS || gbUsedTDE){
-		s32Ret = HI_MPI_VPSS_ReleaseChnFrame(VPSS_GROUP_ID, chn, &priv->stVideoFrame);
+		s32Ret = HI_MPI_VPSS_ReleaseChnFrame(VPSS_GROUP_ID, chn, &stVppFrame);
 		if (s32Ret != HI_SUCCESS)
 		{
 			OSALOG_ERROR("HI_MPI_VPSS_ReleaseChnFrame failed! ret = %d\n", s32Ret);
 		}
 	}
+
+	if(s32Ret != HI_SUCCESS)
+		free(priv);
+	
 	return s32Ret;
 }
 
