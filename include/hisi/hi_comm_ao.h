@@ -1,0 +1,24 @@
+/*
+ * Copyright (c) Hisilicon Technologies Co., Ltd. 2009-2020. All rights reserved.
+ * Description: hi_comm_ao.h
+ * Author: Hisilicon multimedia software group
+ * Create: 2009/5/5
+ */
+
+#ifndef __HI_COMM_AO_H__
+#define __HI_COMM_AO_H__
+
+#ifdef __cplusplus
+#if __cplusplus
+extern "C"{
+#endif
+#endif /* End of #ifdef __cplusplus */
+
+#ifdef __cplusplus
+#if __cplusplus
+}
+#endif
+#endif /* End of #ifdef __cplusplus */
+
+#endif /* End of #ifndef __HI_COMM_AO_H__ */
+
